@@ -1,7 +1,13 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Lead, Course, User, FollowUp } from '../types';
+import { sampleLeads, sampleCourses, sampleCounselors, sampleFollowUps } from '../data/sampleData';
 import toast from 'react-hot-toast';
+
+// Check if we're in local storage mode
+const isLocalMode = !import.meta.env.VITE_SUPABASE_URL || 
+  import.meta.env.VITE_SUPABASE_URL === 'local_storage_mode' ||
+  import.meta.env.VITE_SUPABASE_URL === 'your_supabase_project_url';
 
 export function useDatabase() {
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -10,8 +16,65 @@ export function useDatabase() {
   const [followUps, setFollowUps] = useState<FollowUp[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Local storage keys
+  const STORAGE_KEYS = {
+    leads: 'dmhca_crm_leads',
+    courses: 'dmhca_crm_courses',
+    users: 'dmhca_crm_users',
+    followUps: 'dmhca_crm_followups'
+  };
+
+  // Load data from local storage or sample data
+  const loadLocalData = () => {
+    try {
+      const storedLeads = localStorage.getItem(STORAGE_KEYS.leads);
+      const storedCourses = localStorage.getItem(STORAGE_KEYS.courses);
+      const storedUsers = localStorage.getItem(STORAGE_KEYS.users);
+      const storedFollowUps = localStorage.getItem(STORAGE_KEYS.followUps);
+
+      setLeads(storedLeads ? JSON.parse(storedLeads) : sampleLeads);
+      setCourses(storedCourses ? JSON.parse(storedCourses) : sampleCourses);
+      setUsers(storedUsers ? JSON.parse(storedUsers) : sampleCounselors.map(c => ({
+        ...c,
+        role: 'counselor' as const,
+        preferredLanguage: c.preferredLanguage || 'en',
+        isActive: c.isActive,
+        branch: 'Hyderabad'
+      })));
+      setFollowUps(storedFollowUps ? JSON.parse(storedFollowUps) : sampleFollowUps);
+    } catch (error) {
+      console.error('Error loading local data:', error);
+      // Fallback to sample data
+      setLeads(sampleLeads);
+      setCourses(sampleCourses);
+      setUsers(sampleCounselors.map(c => ({
+        ...c,
+        role: 'counselor' as const,
+        preferredLanguage: c.preferredLanguage || 'en',
+        isActive: c.isActive,
+        branch: 'Hyderabad'
+      })));
+      setFollowUps(sampleFollowUps);
+    }
+  };
+
+  // Save data to local storage
+  const saveToLocalStorage = (key: string, data: any) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (error) {
+      console.error('Error saving to localStorage:', error);
+    }
+  };
+
   // Load all data
   const loadData = async () => {
+    if (isLocalMode) {
+      loadLocalData();
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       const [leadsResult, coursesResult, usersResult, followUpsResult] = await Promise.all([
@@ -20,10 +83,12 @@ export function useDatabase() {
         supabase.from('users').select('*').order('name'),
         supabase.from('follow_ups').select('*').order('date', { ascending: false })
       ]);
+
       if (leadsResult.error) throw leadsResult.error;
       if (coursesResult.error) throw coursesResult.error;
       if (usersResult.error) throw usersResult.error;
       if (followUpsResult.error) throw followUpsResult.error;
+
       const transformedLeads = leadsResult.data?.map((lead: any) => ({
         id: lead.id,
         fullName: lead.full_name || lead.fullName || lead.name || '',
@@ -44,6 +109,7 @@ export function useDatabase() {
         updatedAt: lead.updated_at,
         notesDate: lead.notes_date || ''
       })) || [];
+
       const transformedCourses = coursesResult.data?.map((course: any) => ({
         id: course.id,
         name: course.name,
@@ -54,6 +120,7 @@ export function useDatabase() {
         description: course.description,
         isActive: course.is_active
       })) || [];
+
       const transformedUsers = usersResult.data?.map((user: any) => ({
         id: user.id,
         name: user.name,
@@ -65,8 +132,10 @@ export function useDatabase() {
         isActive: user.is_active,
         preferredLanguage: user.preferred_language || 'en',
         whatsappNumber: user.whatsapp_number,
-        createdAt: user.created_at
+        createdAt: user.created_at,
+        branch: user.branch || 'Hyderabad'
       })) || [];
+
       const transformedFollowUps = followUpsResult.data?.map((followUp: any) => ({
         id: followUp.id,
         leadId: followUp.lead_id,
@@ -78,13 +147,15 @@ export function useDatabase() {
         whatsappSent: followUp.whatsapp_sent,
         createdAt: followUp.created_at
       })) || [];
+
       setLeads(transformedLeads);
       setCourses(transformedCourses);
       setUsers(transformedUsers);
       setFollowUps(transformedFollowUps);
     } catch (error) {
       console.error('Error loading data:', error);
-      toast.error('Failed to load data');
+      toast.error('Failed to load data, using local storage');
+      loadLocalData();
     } finally {
       setLoading(false);
     }
@@ -93,29 +164,56 @@ export function useDatabase() {
   // User CRUD
   const addUser = async (userData: Omit<User, 'id' | 'createdAt'>) => {
     try {
+      const newUser: User = { 
+        ...userData, 
+        id: Date.now().toString(), 
+        createdAt: new Date().toISOString() 
+      };
+
+      if (isLocalMode) {
+        const updatedUsers = [...users, newUser];
+        setUsers(updatedUsers);
+        saveToLocalStorage(STORAGE_KEYS.users, updatedUsers);
+        toast.success('User added successfully!');
+        return newUser;
+      }
+
       const { data, error } = await supabase
         .from('users')
         .insert([{ ...userData }])
         .select()
         .single();
+
       if (error) throw error;
-      const newUser: User = { ...userData, id: data.id, createdAt: data.created_at };
-      setUsers((prev: User[]) => [...prev, newUser]);
+
+      const createdUser: User = { ...userData, id: data.id, createdAt: data.created_at };
+      setUsers((prev: User[]) => [...prev, createdUser]);
       toast.success('User added successfully!');
-      return newUser;
+      return createdUser;
     } catch (error) {
       console.error('Error adding user:', error);
       toast.error('Failed to add user');
       throw error;
     }
   };
+
   const updateUser = async (id: string, updates: Partial<User>) => {
     try {
+      if (isLocalMode) {
+        const updatedUsers = users.map(user => user.id === id ? { ...user, ...updates } : user);
+        setUsers(updatedUsers);
+        saveToLocalStorage(STORAGE_KEYS.users, updatedUsers);
+        toast.success('User updated successfully!');
+        return;
+      }
+
       const { error } = await supabase
         .from('users')
         .update({ ...updates })
         .eq('id', id);
+
       if (error) throw error;
+
       setUsers((prev: User[]) => prev.map(user => user.id === id ? { ...user, ...updates } : user));
       toast.success('User updated successfully!');
     } catch (error) {
@@ -124,9 +222,25 @@ export function useDatabase() {
       throw error;
     }
   };
+
   // CRUD operations for leads
   const addLead = async (leadData: Omit<Lead, 'id' | 'createdAt' | 'updatedAt'>) => {
     try {
+      const newLead: Lead = {
+        ...leadData,
+        id: Date.now().toString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      if (isLocalMode) {
+        const updatedLeads = [newLead, ...leads];
+        setLeads(updatedLeads);
+        saveToLocalStorage(STORAGE_KEYS.leads, updatedLeads);
+        toast.success('Lead added successfully!');
+        return newLead;
+      }
+
       const { data, error } = await supabase
         .from('leads')
         .insert([{
@@ -148,8 +262,10 @@ export function useDatabase() {
         }])
         .select()
         .single();
+
       if (error) throw error;
-      const newLead: Lead = {
+
+      const createdLead: Lead = {
         id: data.id,
         fullName: data.full_name,
         email: data.email,
@@ -169,9 +285,10 @@ export function useDatabase() {
         updatedAt: data.updated_at,
         notesDate: data.notes_date
       };
-      setLeads((prev: Lead[]) => [newLead, ...prev]);
+
+      setLeads((prev: Lead[]) => [createdLead, ...prev]);
       toast.success('Lead added successfully!');
-      return newLead;
+      return createdLead;
     } catch (error) {
       console.error('Error adding lead:', error);
       toast.error('Failed to add lead');
@@ -181,6 +298,18 @@ export function useDatabase() {
 
   const updateLead = async (id: string, updates: Partial<Lead>) => {
     try {
+      const updatedLead = { ...updates, updatedAt: new Date().toISOString() };
+
+      if (isLocalMode) {
+        const updatedLeads = leads.map((lead: Lead) => 
+          lead.id === id ? { ...lead, ...updatedLead } : lead
+        );
+        setLeads(updatedLeads);
+        saveToLocalStorage(STORAGE_KEYS.leads, updatedLeads);
+        toast.success('Lead updated successfully!');
+        return;
+      }
+
       const { error } = await supabase
         .from('leads')
         .update({
@@ -202,9 +331,11 @@ export function useDatabase() {
           updated_at: new Date().toISOString()
         })
         .eq('id', id);
+
       if (error) throw error;
+
       setLeads((prev: Lead[]) => prev.map((lead: Lead) => 
-        lead.id === id ? { ...lead, ...updates, updatedAt: new Date().toISOString() } : lead
+        lead.id === id ? { ...lead, ...updatedLead } : lead
       ));
       toast.success('Lead updated successfully!');
     } catch (error) {
@@ -216,11 +347,21 @@ export function useDatabase() {
 
   const deleteLead = async (id: string) => {
     try {
+      if (isLocalMode) {
+        const updatedLeads = leads.filter((lead: Lead) => lead.id !== id);
+        setLeads(updatedLeads);
+        saveToLocalStorage(STORAGE_KEYS.leads, updatedLeads);
+        toast.success('Lead deleted successfully!');
+        return;
+      }
+
       const { error } = await supabase
         .from('leads')
         .delete()
         .eq('id', id);
+
       if (error) throw error;
+
       setLeads((prev: Lead[]) => prev.filter((lead: Lead) => lead.id !== id));
       toast.success('Lead deleted successfully!');
     } catch (error) {
@@ -249,6 +390,7 @@ export function useDatabase() {
       let lead = leads.find(l =>
         l.fullName === sale.name && l.phone === sale.phone && l.email === sale.email
       );
+
       if (!lead) {
         // If not found, create a new lead
         const newLead = await addLead({
@@ -270,6 +412,7 @@ export function useDatabase() {
         });
         lead = newLead;
       }
+
       // Update lead with sales info
       await updateLead(lead.id, {
         status: 'Admission Done',
@@ -283,6 +426,7 @@ export function useDatabase() {
         qualification: sale.qualification,
         country: sale.country
       });
+
       toast.success('Sale saved!');
     } catch (error) {
       console.error('Error saving sale:', error);
@@ -294,6 +438,7 @@ export function useDatabase() {
   useEffect(() => {
     loadData();
   }, []);
+
   return {
     leads,
     courses,
@@ -305,7 +450,7 @@ export function useDatabase() {
     addLead,
     updateLead,
     deleteLead,
-    addSale, // <-- export addSale
+    addSale,
     refreshData: loadData
   };
 }
